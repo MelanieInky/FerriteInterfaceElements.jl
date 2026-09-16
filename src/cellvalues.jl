@@ -13,6 +13,8 @@ To do so, set `include_R=true`.
 - `there::CellValues`:  values for facet "there"
 - `base_indices_here::Vector{Int}`: base function indices on facet "here"
 - `base_indices_there::Vector{Int}`: base function indices on facet "there"
+- `geo_indices_here::Vector{Int}`: coordinate indices on facet "here"
+- `geo_indices_there::Vector{Int}`: coordinate indices on facet "there"
 - `sides_and_baseindices::Tuple`: side and base function for the base `CellValues` for each base function of the `InterfaceCellValues`
 - `R::Union{AbstractVector,Nothing}`: rotation matrix of the midplane in the quadrature points
 """
@@ -21,38 +23,29 @@ struct InterfaceCellValues{CV,TR,N} <: AbstractCellValues
     there::CV
     base_indices_here::Vector{Int}
     base_indices_there::Vector{Int}
+    geo_indices_here::Vector{Int}
+    geo_indices_there::Vector{Int}
     sides_and_baseindices::NTuple{N,Tuple{Symbol,Int}}
     R::TR # Union{AbstractVector,Nothing} Rotation matrix in quadrature points
 
-    function InterfaceCellValues(ip::IP, here::CV; use_same_cv::Val, include_R::Val) where {IP<:InterfaceCellInterpolation, CV<:CellValues}
+    function InterfaceCellValues(ip::IP, here::CV; use_same_cv::Val, include_R::Val) where {IP<:Union{InterfaceCellInterpolation,VectorizedInterpolation{<:Any,<:Any,<:Any,<:InterfaceCellInterpolation}}, CV<:CellValues}
         N = getnbasefunctions(ip)
         sides_and_baseindices = Tuple( get_side_and_baseindex(ip, i) for i in 1:N )
-        base_indices_here  = collect( get_interface_index(ip, :here,  i) for i in 1:getnbasefunctions(ip.base) )
-        base_indices_there = collect( get_interface_index(ip, :there, i) for i in 1:getnbasefunctions(ip.base) )
-        there = use_same_cv === Val(true) ? here : deepcopy(here)
+        base_indices_here  = [i for i in 1:N if sides_and_baseindices[i][1] == :here]
+        base_indices_there = [i for i in 1:N if sides_and_baseindices[i][1] == :there]
+        ip_geo = InterfaceCellInterpolation(geometric_interpolation(here))
+        geo_indices_here = [get_interface_index(ip_geo, :here, i) for i in 1:getngeobasefunctions(here)]
+        geo_indices_there = [get_interface_index(ip_geo, :there, i) for i in 1:getngeobasefunctions(here)]
+        there = use_same_cv === Val(true) ? here : copy(here)
         R = if include_R === Val(false)
             nothing
         else
             T = eltype(here.detJdV)
             Vector{Tensor{2, Ferrite.getrefdim(ip), T}}(undef, getnquadpoints(here))
         end
-        return new{CV,typeof(R),N}(here, there, base_indices_here, base_indices_there, sides_and_baseindices, R)
+        return new{CV,typeof(R),N}(here, there, base_indices_here, base_indices_there, geo_indices_here, geo_indices_there, sides_and_baseindices, R)
     end
-    function InterfaceCellValues(ip::IP, here::CV; use_same_cv::Val, include_R::Val) where {IP<:VectorizedInterpolation{<:Any,<:Any,<:Any,<:InterfaceCellInterpolation}, CV<:CellValues}
-        N = getnbasefunctions(ip)
-        sides_and_baseindices = Tuple( get_side_and_baseindex(ip, i) for i in 1:N )
-        ip = ip.ip
-        base_indices_here  = collect( get_interface_index(ip, :here,  i) for i in 1:getnbasefunctions(ip.base) )
-        base_indices_there = collect( get_interface_index(ip, :there, i) for i in 1:getnbasefunctions(ip.base) )
-        there = use_same_cv === Val(true) ? here : deepcopy(here)
-        R = if include_R === Val(false)
-            nothing
-        else
-            T = eltype(here.detJdV)
-            Vector{Tensor{2, Ferrite.getrefdim(ip), T}}(undef, getnquadpoints(here))
-        end
-        return new{CV,typeof(R),N}(here, there, base_indices_here, base_indices_there, sides_and_baseindices, R)
-    end
+
 end
 
 InterfaceCellValues(qr::QuadratureRule, args...; kwargs...) = InterfaceCellValues(Float64, qr, args...; kwargs...)
@@ -78,12 +71,12 @@ end
 function InterfaceCellValues(::Type{T}, qr::QuadratureRule, 
             ip::InterfaceCellInterpolation, 
             ip_geo::InterfaceCellInterpolation{shape}; kwargs...) where {T, dim, shape <: AbstractRefShape{dim}}
-    return InterfaceCellValues(T, qr, ip, VectorizedInterpolation{dim}(ip); kwargs...)
+    return InterfaceCellValues(T, qr, ip, VectorizedInterpolation{dim}(ip_geo); kwargs...)
 end
 function InterfaceCellValues(::Type{T}, qr::QuadratureRule, 
             ip::VectorizedInterpolation{<:Any,<:Any,<:Any,<:InterfaceCellInterpolation}, 
             ip_geo::InterfaceCellInterpolation{shape}; kwargs...) where {T, dim, shape <: AbstractRefShape{dim}}
-    return InterfaceCellValues(T, qr, ip, VectorizedInterpolation{dim}(ip.ip); kwargs...)
+    return InterfaceCellValues(T, qr, ip, VectorizedInterpolation{dim}(ip_geo); kwargs...)
 end
 
 function Ferrite.default_geometric_interpolation(::Type{InterfaceCell{shape, C, N}}) where {shape<:AbstractRefShape, C, N} 
@@ -117,15 +110,16 @@ Ferrite.reinit!(cv::InterfaceCellValues, x::AbstractVector{<:Vec}) = reinit!(cv,
 
 function Ferrite.reinit!(cv::InterfaceCellValues{CV}, cell::Union{Ferrite.AbstractCell, Nothing},
                          x::AbstractVector{Vec{sdim,T}}) where {sdim, T, CV}
-    n_coords_per_side = length(x) ÷ 2
+    ncoords = getngeobasefunctions(cv)
+    length(x) == ncoords || throw(ArgumentError("Expected $ncoords coordinates, got $(length(x))."))
     cell_here, cell_there = cell === nothing ? (nothing, nothing) : (cell.here, cell.there)
-
-    x_here  = @view x[cv.base_indices_here[1:n_coords_per_side]]
-    x_there = @view x[cv.base_indices_there[1:n_coords_per_side]]
+    x_here = view(x, cv.geo_indices_here)
+    x_there = view(x,cv.geo_indices_there)
 
     reinit!(cv.here, cell_here, x_here)
-    if !(cv.here === cv.there)
-        reinit!(cv.there, cell_there, x_there)
+    if ! (cv.here === cv.there)
+        x_there = view(x, cv.geo_indices_there)
+        reinit!(cv.there,cell_there, x_there)
     end
 
     if cv.R !== nothing
@@ -244,6 +238,14 @@ function Ferrite.shape_gradient_jump(cv::InterfaceCellValues, qp::Int, i::Int)
     return side == :here ? -shape_gradient(cv.here, qp, baseindex) : shape_gradient(cv.there, qp, baseindex)
 end
 
+function _side_dof_range(cv::InterfaceCellValues, u::AbstractVector, here::Bool, dof_range)
+    nbf = getnbasefunctions(cv)
+    length(dof_range) == nbf || throw(ArgumentError("Expected $nbf DOFs, got $(length(dof_range))."))
+    @boundscheck checkbounds(u, dof_range)
+    indices = here ? cv.base_indices_here : cv.base_indices_there
+    return view(dof_range, indices)
+end
+
 """
     function_value(cv::InterfaceCellValues, qp::Int, u::AbstractVector, here::Bool)
 
@@ -252,15 +254,8 @@ where `true` means "here" and `false` means "there".
 `u` is a vector with values for the degrees of freedom.
 """
 function Ferrite.function_value(cv::InterfaceCellValues, qp::Int, u::AbstractVector, here::Bool, dof_range = eachindex(u))
-    nbf = getnbasefunctions(cv)
-    length(dof_range) == nbf || throw_incompatible_dof_length(length(dof_range), nbf)
-    @boundscheck checkbounds(u, dof_range)
-    @boundscheck checkquadpoint(cv, qp)
-    val = function_value_init(cv, u)
-    @inbounds for (i, j) in pairs(dof_range)
-        val += shape_value(cv, qp, i, here) * u[j]
-    end
-    return val
+    side_range = _side_dof_range(cv, u, here, dof_range)
+    return function_value(here ? cv.here : cv.there, qp, u, side_range)
 end
 
 """
@@ -271,15 +266,8 @@ where `true` means "here" and `false` means "there".
 `u` is a vector with values for the degrees of freedom.
 """
 function Ferrite.function_gradient(cv::InterfaceCellValues, qp::Int, u::AbstractVector, here::Bool, dof_range = eachindex(u))
-    nbf = getnbasefunctions(cv)
-    length(dof_range) == nbf || throw_incompatible_dof_length(length(dof_range), nbf)
-    @boundscheck checkbounds(u, dof_range)
-    @boundscheck checkquadpoint(cv, qp)
-    grad = function_gradient_init(cv, u)
-    @inbounds for (i, j) in pairs(dof_range)
-        grad += shape_gradient(cv, qp, i, here) * u[j]
-    end
-    return grad
+    side_range = _side_dof_range(cv, u, here, dof_range)
+    return function_gradient(here ? cv.here : cv.there, qp, u, side_range)
 end
 
 """
