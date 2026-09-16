@@ -108,17 +108,16 @@ Ferrite.reinit!(cv::InterfaceCellValues, cc::CellCache) = reinit!(cv, getcells(c
 
 Ferrite.reinit!(cv::InterfaceCellValues, x::AbstractVector{<:Vec}) = reinit!(cv, nothing, x)
 
-function Ferrite.reinit!(cv::InterfaceCellValues{CV}, cell::Union{Ferrite.AbstractCell, Nothing},
+function Ferrite.reinit!(cv::InterfaceCellValues{CV}, cell::Union{Nothing, InterfaceCell},
                          x::AbstractVector{Vec{sdim,T}}) where {sdim, T, CV}
     ncoords = getngeobasefunctions(cv)
     length(x) == ncoords || throw(ArgumentError("Expected $ncoords coordinates, got $(length(x))."))
     cell_here, cell_there = cell === nothing ? (nothing, nothing) : (cell.here, cell.there)
     x_here = view(x, cv.geo_indices_here)
-    x_there = view(x,cv.geo_indices_there)
+    x_there = view(x, cv.geo_indices_there)
 
     reinit!(cv.here, cell_here, x_here)
     if ! (cv.here === cv.there)
-        x_there = view(x, cv.geo_indices_there)
         reinit!(cv.there,cell_there, x_there)
     end
 
