@@ -217,6 +217,30 @@ end
     end
 end
 
+@testset "reinit! with CellCache" begin
+    grid = generate_grid(Quadrilateral, (2, 1))
+    addcellset!(grid, "A", Set([1]))
+    addcellset!(grid, "B", Set([2]))
+    grid = insert_interfaces(grid, ["A", "B"])
+
+    qr = QuadratureRule{RefLine}(2)
+    ip = InterfaceCellInterpolation(Lagrange{RefLine, 1}())
+    cid = first(getcellset(grid, "interfaces"))
+
+    # The trait decides whether Ferrite's generic method passes the cell or `nothing`
+    cv = InterfaceCellValues(qr, ip)
+    @test Ferrite.reinit_needs_cell(cv) == false
+
+    cc = CellCache(grid)
+    reinit!(cc, cid)
+    reinit!(cv, cc)
+
+    cv_ref = InterfaceCellValues(qr, ip)
+    reinit!(cv_ref, getcells(grid, cid), getcoordinates(grid, cid))
+
+    @test all(getdetJdV_average(cv, q) ≈ getdetJdV_average(cv_ref, q) for q in 1:getnquadpoints(cv))
+end
+
 @testset "reinit! with superparametric field (ip order 2, geometry order 1)" begin
     # Quadratic field, linear geometry: base_indices_* (function space, 3 per side)
     # and the coordinate vector (4 geometric nodes) have different lengths.
