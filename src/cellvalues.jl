@@ -125,7 +125,9 @@ function Ferrite.reinit!(cv::InterfaceCellValues{CV}, cell::Union{Nothing, Inter
         for qp in 1:getnquadpoints(cv.here)
             mapping_here  = Ferrite.calculate_mapping(cv.here.geo_mapping,  qp, x_here)
             mapping_there = Ferrite.calculate_mapping(cv.there.geo_mapping, qp, x_there)
-            J = (Ferrite.getjacobian(mapping_here) + Ferrite.getjacobian(mapping_there)) / 2
+            J_here  = Ferrite.getjacobian(mapping_here)
+            J_there = Ferrite.getjacobian(mapping_there)
+            J = (J_here + J_there) / 2
             cv.R[qp] = _get_R_from_J(J)
         end
     end
